@@ -17,8 +17,14 @@ load_dotenv()
 since = None
 until = None
 
-
+# See the list of date presets here:
+# https://developers.facebook.com/docs/marketing-api/reference/adgroup/insights/#parameters
 date_preset = 'last_7d'
+
+# Uncomment and set the dates to use a custom time range
+# Format: 'YYYY-MM-DD'
+# NOTE: If you set a custom time range, the date_preset will be ignored
+
 # since = '2022-01-01'
 # until = '2022-01-31'
 
