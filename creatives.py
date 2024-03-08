@@ -3,15 +3,17 @@ import os
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
-import numpy as np
 import re
-import json
-from collections import defaultdict
 from datetime import datetime
+from dotenv import load_dotenv
+
 from facebook_business.api import FacebookAdsApi
 from facebook_business.adobjects.adaccount import AdAccount
 from facebook_business.adobjects.adsinsights import AdsInsights
 
+load_dotenv()
+
+# Don't change these
 since = None
 until = None
 
@@ -32,49 +34,122 @@ def main():
             "video_asset",
     ]
 
+    current_time = datetime.now()
+    formatted_time = current_time.strftime("%Y-%m-%dT%H-%M-%S")
+
+    time_period = ''
+
+    if since and until:
+        time_period = f"{since} to {until}"
+    else:
+        time_period = date_preset
+
     for breakdown in breakdowns:
         ads = get_ads(breakdown, since=since, until=until, date_preset=date_preset)
 
-        # print(json.dumps(ads, indent=4))
-
         df = pd.DataFrame.from_dict(ads)
 
-        df["click_through_rate"] = df["clicks"] / df["impressions"]
+        if df.empty:
+            print(f"No ads found for breakdown: {breakdown}. Skipping...")
+            continue
+
+        df["click_through_rate"] = (df["clicks"] / df["impressions"]) * 100
         df["cost_per_click"] = df["spend"] / df["clicks"]
         df["cost_per_lead"] = df["spend"] / df["lead"]
         df["cost_per_purchase"] = df["spend"] / df["purchase"]
+        df["lead_conversion_rate"] = (df["lead"] / df["clicks"]) * 100
+
+        print(f"Creating plots for breakdown: {breakdown}")
+
+        dir = f"output/{formatted_time}__{safe_folder_name(time_period)}"
 
         create_plot(
                 df,
                 "barplot",
                 "breakdown",
                 "click_through_rate",
-                f"Click Through Rate by {breakdown}",
-                f"ctr_by_{breakdown}.png",
-                figsize=(30, 30),
+                f"Total Click Through Rate by {breakdown}",
+                f"{dir}/totals/{breakdown}_total_ctr.png",
+        )
+
+        create_plot(
+                df,
+                "barplot",
+                "breakdown",
+                "cost_per_lead",
+                f"Total Cost per Lead by {breakdown}",
+                f"{dir}/totals/{breakdown}_total_cpl.png",
+        )
+
+        create_plot(
+                df,
+                "barplot",
+                "breakdown",
+                "lead_conversion_rate",
+                f"Total Lead Conversion Rate by {breakdown}",
+                f"{dir}/totals/{breakdown}_total_lcvr.png",
         )
 
 
-        # current_time = datetime.now()
-        # formatted_time = current_time.strftime("%Y-%m-%dT%H-%M-%S")
-        #
-        # time_period = ''
-        #
-        # if since and until:
-        #     time_period = f"{since} to {until}"
-        # else:
-        #     time_period = date_preset
+        plt.figure(figsize=(12, 5)) 
 
-        # export_to_csv(df, f"{formatted_time} {breakdown} {time_period}.csv")
-        break
+        # CTR vs. Conversion Rate plot
+        plt.subplot(1, 2, 1)
+        sns.regplot(x='lead_conversion_rate', y='click_through_rate', data=df, ci=None, scatter_kws={'alpha':0.5})
+        plt.title('CTR vs. Lead Conversion Rate')
+        plt.xlabel('Click Through Rate (%)')
+        plt.ylabel('Lead Conversion Rate (%)')
+
+        # Conversion Rate vs. Cost Per Lead plot
+        plt.subplot(1, 2, 2)
+        sns.regplot(x='cost_per_lead', y='lead_conversion_rate', data=df, ci=None, scatter_kws={'alpha':0.5})
+        plt.title('Conversion Rate vs. Cost Per Lead')
+        plt.xlabel('Lead Conversion Rate (%)')
+        plt.ylabel('Cost Per Lead ($)')
+        
+        plt.savefig(f"{dir}/totals/{breakdown}_scatter.png", bbox_inches="tight")
+
+        # Loop through each campaign and create a plot for each
+        for c in df["campaign_name"].unique():
+            campaign_df = df[df["campaign_name"] == c]
+
+            create_plot(
+                campaign_df,
+                "barplot",
+                "breakdown",
+                "click_through_rate",
+                f"Click Through Rate by {breakdown} for {c}",
+                f"{dir}/campaigns/{safe_folder_name(c)}/{breakdown}_ctr.png",
+            )
+
+            create_plot(
+                campaign_df,
+                "barplot",
+                "breakdown",
+                "cost_per_lead",
+                f"Cost per Lead by {breakdown} for {c}",
+                f"{dir}/campaigns/{safe_folder_name(c)}/{breakdown}_cpl.png",
+            )
+
+            create_plot(
+                campaign_df,
+                "barplot",
+                "breakdown",
+                "lead_conversion_rate",
+                f"Lead conversion rate by {breakdown} for {c}",
+                f"{dir}/campaigns/{safe_folder_name(c)}/{breakdown}_lcvr.png",
+            )
+
+        print(f"Exporting data to CSV for breakdown: {breakdown}")
+        export_to_csv(df, f"{dir}/csv/{breakdown}.csv")
 
 def get_ads(breakdown, date_preset=None, since=None, until=None):
     print(f"Getting ads for breakdown: {breakdown}")
 
-    my_app_id = os.environ.get('FB_APP_ID')
-    my_app_secret = os.environ.get('MY_APP_SECRET')
-    my_access_token = os.environ.get('MY_ACCESS_TOKEN')
-    ad_account_id = os.environ.get('AD_ACCOUNT_ID')
+    my_app_id = os.getenv('MY_APP_ID')
+    my_app_secret = os.getenv('MY_APP_SECRET')
+    my_access_token = os.getenv('MY_ACCESS_TOKEN')
+    ad_account_id = os.getenv('AD_ACCOUNT_ID')
 
     FacebookAdsApi.init(my_app_id, my_app_secret, my_access_token)
     ad_account = AdAccount(f'act_{ad_account_id}')
@@ -115,12 +190,12 @@ def get_ads(breakdown, date_preset=None, since=None, until=None):
 
     ads = [ad for ad in ads]
 
-    print(f"Retrieved {len(ads)} ads for breakdown: {breakdown}. Formatting data...")
+    print(f"Retrieved {len(ads)} ads for breakdown: {breakdown}")
 
     # Mapping of breakdown types to their key and id in the asset
     breakdown_mapping = {
         "body_asset": ('text', 'id'),
-        "call_to_action_asset": ('type', 'id'),
+        "call_to_action_asset": ('name', 'id'),
         "description_asset": ('text', 'id'),
         "image_asset": ('image_name', 'id'),
         "link_url_asset": ('display_url', 'id'),
@@ -135,7 +210,7 @@ def get_ads(breakdown, date_preset=None, since=None, until=None):
         ad = {
             "account_id": ad.get("account_id"),
             "account_name": ad.get("account_name"),
-            "campaign_id": ad.get("campaign_id"),
+            "campaign_id": remove_emojis(ad.get("campaign_id")),
             "adset_id": ad.get("adset_id"),
             "ad_id": ad.get("ad_id"),
             "campaign_name": ad.get("campaign_name"),
@@ -153,7 +228,7 @@ def get_ads(breakdown, date_preset=None, since=None, until=None):
             sys.exit(f"Breakdown {breakdown} not found in ad data. Exiting.")
 
         key_field, id_field = breakdown_mapping[breakdown]
-        ad["breakdown"] = remove_emojis(asset.get(key_field)).replace('\n', ' ')
+        ad["breakdown"] = remove_emojis(asset.get(key_field, "")).replace('\n', ' ')
         ad["breakdown_id"] = asset.get(id_field)        
 
         for a in ad["actions"]:
@@ -187,8 +262,9 @@ def remove_emojis(text):
 
 
 def safe_folder_name(folder_name):
-    # Remove special characters from the folder name
-    return folder_name.replace(" ", "_").replace(":", "").lower()
+    folder_name = folder_name.replace(' ', '_')  # Replace spaces with underscores
+    safe_name = re.sub(r'[^\w\-_]', '', folder_name)  # Keep only alphanumerics, underscores, and hyphens
+    return safe_name
 
 
 def create_plot(
@@ -198,21 +274,18 @@ def create_plot(
     y,
     title,
     filename,
-    figsize=(10, 6),
-    save_dir="output",
-    label_length=60,
+    figsize=(30, 30),
+    label_length=120,
     axis_font_size=15,
     title_font_size=20,
     legend_font_size=15
 ):
-    print(f"Creating {plot_type}: {save_dir}/{filename}")
-
     # Sort the DataFrame by the 'y' column in descending order
     df_sorted = df.sort_values(by=y, ascending=False)
 
     # Apply the function to truncate labels and remove emojis
     truncated_labels = df_sorted[x].apply(
-        lambda label: label[:(label_length - 3)]
+        lambda label: label[:(label_length - 3)] + '...'
         if len(label) > label_length 
         else label
     )
@@ -221,8 +294,32 @@ def create_plot(
 
     if plot_type == 'boxplot':
         ax = sns.boxplot(x=df_sorted[y], y=truncated_labels, data=df_sorted)
+        # Extract the median values for each category
+        medians = df_sorted.groupby(truncated_labels)[y].median().reindex(truncated_labels)
+        # Use the values to annotate the median in the plot
+        for tick, label in enumerate(ax.get_yticklabels()):
+            ax.text(
+                medians[label.get_text()],  # x-position (median value)
+                tick,  # y-position (index of the box)
+                f'{medians[label.get_text()]:.2f}',  # label text
+                verticalalignment='center',  # Center alignment vertically
+                horizontalalignment='right',  # Align right of the median line
+                size=axis_font_size,  # Font size
+                color='black',  # Text color
+                weight='semibold'  # Text weight
+            )
     elif plot_type == 'barplot':
         ax = sns.barplot(x=df_sorted[y], y=truncated_labels, data=df_sorted)
+        for p in ax.patches:
+                ax.annotate(
+                    format(p.get_width(), '.2f'),  # Format the label
+                    (p.get_x() + p.get_width(), p.get_y() + ((p.get_height() / 2)) + .2),  # Position at the end of the bar
+                    ha='left',  # Align horizontally to left
+                    va='center',  # Align vertically to center
+                    xytext=(5, 0),  # Offset text by 5 points to the right
+                    textcoords='offset points',  # Interpret xytext as offset in points
+                    fontsize=axis_font_size,  # Font size
+                )
     else:
         sys.exit(f"Invalid plot type: {plot_type}. Exiting.")
 
@@ -234,52 +331,57 @@ def create_plot(
     ax.axvline(overall_avg + std_dev, color="#03C6FC", linestyle="--", label="+1 Std Dev")
     ax.axvline(max(overall_avg - std_dev, 0), color="#03C6FC", linestyle="--", label="-1 Std Dev")
 
+    # Add annotations for the average and standard deviations
     ax.annotate(
         f"Average: {overall_avg:.2f}",
-        xy=(overall_avg, 0),
+        xy=(overall_avg + .17, .1),
         xytext=(overall_avg, -0.5),
-        arrowprops=dict(facecolor="black", shrink=0.05),
+        textcoords="offset points",
+        ha="center",
+        va="center",
         fontsize=axis_font_size,
+        color="#ff6961",
     )
 
     ax.annotate(
         f"+1 Std Dev: {overall_avg + std_dev:.2f}",
-        xy=(overall_avg + std_dev, 0),
+        xy=(overall_avg + std_dev + .17, .1),
         xytext=(overall_avg + std_dev, -0.5),
-        arrowprops=dict(facecolor="black", shrink=0.05),
+        textcoords="offset points",
+        ha="center",
+        va="center",
         fontsize=axis_font_size,
+        color="#03C6FC",
     )
 
     ax.annotate(
         f"-1 Std Dev: {max(overall_avg - std_dev, 0):.2f}",
-        xy=(max(overall_avg - std_dev, 0), 0),
+        xy=(max(overall_avg - std_dev + .17, 0), .1),
         xytext=(max(overall_avg - std_dev, 0), -0.5),
-        arrowprops=dict(facecolor="black", shrink=0.05),
+        textcoords="offset points",
+        ha="center",
+        va="center",
         fontsize=axis_font_size,
+        color="#03C6FC",
     )
-
+   
     plt.title(title, fontsize=title_font_size)
     plt.xlabel(y, fontsize=axis_font_size)
     plt.ylabel(x, fontsize=axis_font_size)
     plt.legend(fontsize=legend_font_size)
 
+    # Get the name of the file to save
+    folder = "/".join(filename.split("/")[:-1])
+
     # Check if the directory exists, create it if it doesn't
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
+    if not os.path.exists(folder):
+        os.makedirs(folder)
 
-    filepath = os.path.join(save_dir, filename)
-
-    try:
-        plt.savefig(filepath, bbox_inches="tight")
-    except RuntimeWarning as e:
-        print(f"An error occurred while saving the file: {e}")
-    finally:
-        plt.close()
-
-    print(f"Saved {plot_type} to {filepath}")
+    plt.savefig(filename, bbox_inches="tight")
+    plt.close()
 
 
-def export_to_csv_with_ordered_headers(data, file_path):
+def export_to_csv(data, file_path):
     preferred_order = [
         "account_id",
         "campaign_id",
@@ -301,37 +403,6 @@ def export_to_csv_with_ordered_headers(data, file_path):
         "video_view",
     ]
 
-    preferred_order = [
-    "account_id",
-    "campaign_id",
-    "ad_id",
-    "breakdown_id",
-    "account_name",
-    "campaign_name",
-    "ad_name",
-    "breakdown",
-    "click_through_rate",
-    "avg_campaign_ctr",
-    'ctr_greater_than_avg',  
-    "cost_per_click",
-    "avg_campaign_cpc",
-    'cpc_greater_than_avg', 
-    "cost_per_lead",
-    "avg_campaign_cpl",
-    'cpl_greater_than_avg',
-    "cost_per_purchase",
-    "avg_campaign_cpp",
-    'cpp_greater_than_avg',
-    "spend",
-    "impressions",
-    "clicks",
-    "lead",
-    "purchase",
-    "post_reaction",
-    "post_engagement",
-    "video_view",
-]
-
     # Extract dynamic headers from DataFrame, excluding those already in preferred_order
     dynamic_headers = sorted(set(data.columns) - set(preferred_order))
 
@@ -341,12 +412,13 @@ def export_to_csv_with_ordered_headers(data, file_path):
     # Reorder DataFrame columns
     ordered_data = data.reindex(columns=ordered_headers)
 
+    # Check if the directory exists, create it if it doesn't 
+    folder = "/".join(file_path.split("/")[:-1])
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
     # Export the DataFrame to CSV
     ordered_data.to_csv(file_path, index=False)
-
-# Example usage
-# Assume 'df' is your DataFrame loaded with data
-# export_to_csv_with_ordered_headers(df, 'path_to_your_file.csv')
 
 
 main()
